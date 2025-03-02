@@ -93,7 +93,7 @@ db.serialize(() => {
 // Middlewares
 app.use(cors());
 app.use(bodyParser.json());
-app.use('/uploads', express.static('uploads')); // Servir arquivos estáticos
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));// Servir arquivos estáticos
 
 // Rota de registro
 app.post('/register', (req, res) => {
@@ -153,9 +153,9 @@ function authenticateToken(req, res, next) {
 }
 
 // Rota para cadastrar mercadorias
-app.post('/mercadorias', authenticateToken, upload.single('image'), (req, res) => {
+app.post('/mercadorias', authenticateToken, upload.array('images', 5), (req, res) => {
   const { name, price, height, width, status } = req.body;
-  const image = req.file ? req.file.filename : null;
+  const images = req.files.map((file) => file.filename); // Pega os nomes dos arquivos
 
   if (!name || !price || !height || !width || !status) {
     return res.status(400).json({ message: 'Todos os campos são obrigatórios.' });
@@ -163,17 +163,17 @@ app.post('/mercadorias', authenticateToken, upload.single('image'), (req, res) =
 
   db.run(
     `INSERT INTO mercadorias (name, price, height, width, status, image) VALUES (?, ?, ?, ?, ?, ?)`,
-    [name, price, height, width, status, image],
+    [name, price, height, width, status, JSON.stringify(images)], // Salva as imagens como JSON
     function (err) {
       if (err) {
         return res.status(500).json({ message: 'Erro ao cadastrar mercadoria.' });
       }
-      // Emitir evento para os clientes conectados
-      io.emit('newMercadoria', { id: this.lastID, name, price, height, width, status, image });
+      io.emit('newMercadoria', { id: this.lastID, name, price, height, width, status, images });
       res.status(201).json({ message: 'Mercadoria cadastrada com sucesso!', id: this.lastID });
     }
   );
 });
+
 
 // Rota para obter todas as mercadorias
 app.get('/mercadorias', (req, res) => {
@@ -181,9 +181,17 @@ app.get('/mercadorias', (req, res) => {
     if (err) {
       return res.status(500).json({ message: 'Erro ao buscar mercadorias.' });
     }
-    res.json(rows);
+
+    // Ajustar a URL das imagens
+    const mercadorias = rows.map((item) => ({
+      ...item,
+      images: item.image ? JSON.parse(item.image).map(img => `http://localhost:5000/uploads/${img}`) : []
+    }));
+
+    res.json(mercadorias);
   });
 });
+
 
 // Configuração do Socket.io para comunicação em tempo real
 io.on('connection', (socket) => {
@@ -204,6 +212,28 @@ io.on('connection', (socket) => {
     io.emit('newMessage', message);
   });
 });
+
+// Rota para obter os detalhes de uma mercadoria
+app.get('/mercadorias/:id', (req, res) => {
+  const { id } = req.params;
+  db.get(`SELECT * FROM mercadorias WHERE id = ?`, [id], (err, row) => {
+    if (err) {
+      return res.status(500).json({ message: 'Erro ao buscar mercadoria.' });
+    }
+    if (!row) {
+      return res.status(404).json({ message: 'Item não encontrado.' });
+    }
+
+    // Certifique-se de que o campo de imagem está sendo tratado corretamente
+    const mercadoria = {
+      ...row,
+      images: row.image ? JSON.parse(row.image).map(img => `http://localhost:5000/uploads/${img}`) : []
+    };
+
+    res.json(mercadoria);
+  });
+});
+
 
 // Inicia o servidor
 server.listen(PORT, () => {
